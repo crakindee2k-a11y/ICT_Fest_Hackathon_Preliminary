@@ -17,3 +17,10 @@ request → captured response), not just static reads.
 - **Symptom:** After `POST /auth/logout`, the same access token still authorized requests (GET /rooms returned 200 instead of 401).
 - **Why broken:** `revoke_access_token` stores the token's `jti` into `_revoked_tokens`, but `get_token_payload` checked `payload.get("sub")` (user id) against that set. `jti` ≠ `sub`, so the membership test never matched and revocation never fired.
 - **Fix:** Check `payload.get("jti")` instead of `sub`. Revokes exactly the presented token (per-`jti`), not all of the user's tokens. Verified: logged-out token → 401; a second independent token for the same user still → 200 (no over-revocation).
+
+## Bug 3 — Refresh token not single-use  (Medium)
+- **File / line:** `app/routers/auth.py:81` (refresh endpoint); helper added at `app/auth.py:88`.
+- **Rule:** #8 — refresh tokens are single-use; `POST /auth/refresh` rotates the pair and invalidates the presented refresh token (reuse → 401).
+- **Symptom:** The same refresh token could be replayed indefinitely — first and second `POST /auth/refresh` both returned 200.
+- **Why broken:** `refresh()` issued a new token pair but never recorded the presented refresh token as consumed, so no reuse check ever failed.
+- **Fix:** Reuse the existing `_revoked_tokens` mechanism: added `is_token_revoked(payload)` helper in `auth.py`; in `refresh()`, reject a presented refresh token whose `jti` is already revoked (401) and revoke its `jti` on successful use. Verified: refresh #1 → 200, replay of same token → 401, chained new token also single-use, access token presented to /refresh → 401 (wrong type).

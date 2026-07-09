@@ -86,6 +86,10 @@ def revoke_access_token(payload: dict) -> None:
     _revoked_tokens.add(payload["jti"])
 
 
+def is_token_revoked(payload: dict) -> bool:
+    return payload.get("jti") in _revoked_tokens
+
+
 def get_token_payload(request: Request) -> dict:
     header = request.headers.get("Authorization")
     if not header or not header.startswith("Bearer "):
