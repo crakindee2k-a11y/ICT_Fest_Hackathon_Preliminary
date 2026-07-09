@@ -38,3 +38,10 @@ request → captured response), not just static reads.
 - **Symptom:** `GET /bookings/{id}` returned `start_time` equal to `created_at` instead of the actual booking start.
 - **Why broken:** After `serialize_booking()` produced the correct payload, a stray line reassigned `response["start_time"] = iso_utc(booking.created_at)`, clobbering the correct value. Only the detail endpoint had this line; create/list use the same serializer correctly.
 - **Fix:** Deleted the overwriting line. Verified: GET returns the real start (`14:00Z`), distinct from `created_at`, with all other fields and the `refunds` array intact.
+
+## Bug 6 — Back-to-back bookings rejected as conflict  (Medium)
+- **File / line:** `app/routers/bookings.py:50`
+- **Rule:** #3 — overlap iff `existing.start < new.end AND new.start < existing.end`; back-to-back (one ends exactly when the other starts) is allowed.
+- **Symptom:** A booking starting exactly when an existing one ends (e.g. 12:00–14:00 after 10:00–12:00) was wrongly rejected with `409 ROOM_CONFLICT`.
+- **Why broken:** The overlap test used `<=` on both bounds (`b.start_time <= end and start <= b.end_time`), so touching endpoints counted as overlap.
+- **Fix:** Strict `<` on both bounds (`b.start_time < end and start < b.end_time`), matching the spec's overlap condition. Verified: back-to-back on both sides → 201; exact-same, partial, contained, and straddling overlaps → 409.
