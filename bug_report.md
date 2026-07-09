@@ -52,3 +52,10 @@ request → captured response), not just static reads.
 - **Symptom:** Zero-duration bookings (`end == start`) were accepted (201, price 0), and negative-duration bookings (`end < start`) were accepted with a negative price.
 - **Why broken:** The check only tested `duration_hours > MAX_DURATION_HOURS`. Zero passed the whole-hour test (`0 != int(0)` is False) and the upper-bound test; negatives likewise (`-2 > 8` is False). The defined `MIN_DURATION_HOURS = 1` constant was never used.
 - **Fix:** Range-check both bounds: `duration_hours < MIN_DURATION_HOURS or duration_hours > MAX_DURATION_HOURS`. This also enforces `end > start`, since any `end <= start` yields duration ≤ 0 < min. Verified: 0h → 400, negative → 400, 1h → 201, 8h → 201, 9h → 400.
+
+## Bug 8 — Booking allowed a 5-minute past-start grace window  (Medium)
+- **File / line:** `app/routers/bookings.py:86`
+- **Rule:** #2 — `start_time` must be strictly in the future at request time; no grace window of any size.
+- **Symptom:** Bookings with a `start_time` up to 5 minutes in the past were accepted (e.g. 100s in the past → 201).
+- **Why broken:** The guard was `start <= now - timedelta(seconds=300)`, rejecting only starts more than 5 minutes old and silently allowing the `(now-300s, now]` window.
+- **Fix:** `start <= now` — rejects any non-future start, including exactly `now`. Verified: 100s-past → 400, 10s-past → 400, valid future → 201. (`timedelta` import retained; still used by the quota window.)
