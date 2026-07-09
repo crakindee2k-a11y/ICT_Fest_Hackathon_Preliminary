@@ -126,3 +126,10 @@ request → captured response), not just static reads.
 - **Symptom:** 30 simultaneous booking creates all returned 201 — zero 429s, rate limit completely bypassed.
 - **Why broken:** `record_and_check` read the user's bucket, trimmed it, slept (`_settle_pause`), then appended and wrote back — a non-atomic read-modify-write. Concurrent callers all read the same small bucket before any wrote, so none observed `len > 20`.
 - **Fix:** Wrapped trim→append→check in a module-level `threading.Lock` (`_buckets_lock`), acquired at the top of the create path before any other lock. The `> _MAX_REQUESTS` threshold (20 allowed, 21st blocked) was already correct. Verified: 30 concurrent creates → exactly 20 × 201 and 10 × 429, no other statuses.
+
+## Bug 18 — Stats lost-update under concurrent create/cancel  (Hard)
+- **File / line:** `app/services/stats.py:15-30`
+- **Rule:** #14 — room stats count/revenue always equals the values derivable from the bookings themselves; cancellation decrements both.
+- **Symptom:** Under concurrent creates/cancels the incremental counters drifted from the true booking-derived totals.
+- **Why broken:** `record_create` and `record_cancel` both read the current `{count, revenue}`, slept (`_aggregate_pause`), then wrote back — non-atomic read-modify-write on shared `_stats`. Concurrent callers lost increments/decrements.
+- **Fix:** One shared module `threading.Lock` (`_stats_lock`) guarding both mutators and the reader (single lock, since all touch `_stats`). Leaf lock, nests nothing. Verified: 15 concurrent creates → stats 15/15000; 5 concurrent cancels → 10/10000, exactly matching the totals derived from the usage report.
