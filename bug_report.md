@@ -45,3 +45,10 @@ request → captured response), not just static reads.
 - **Symptom:** A booking starting exactly when an existing one ends (e.g. 12:00–14:00 after 10:00–12:00) was wrongly rejected with `409 ROOM_CONFLICT`.
 - **Why broken:** The overlap test used `<=` on both bounds (`b.start_time <= end and start <= b.end_time`), so touching endpoints counted as overlap.
 - **Fix:** Strict `<` on both bounds (`b.start_time < end and start < b.end_time`), matching the spec's overlap condition. Verified: back-to-back on both sides → 201; exact-same, partial, contained, and straddling overlaps → 409.
+
+## Bug 7 — Minimum duration and end>start not enforced  (Medium)
+- **File / line:** `app/routers/bookings.py:93`
+- **Rule:** #2 — duration is whole hours, min 1, max 8; `end_time` strictly after `start_time`.
+- **Symptom:** Zero-duration bookings (`end == start`) were accepted (201, price 0), and negative-duration bookings (`end < start`) were accepted with a negative price.
+- **Why broken:** The check only tested `duration_hours > MAX_DURATION_HOURS`. Zero passed the whole-hour test (`0 != int(0)` is False) and the upper-bound test; negatives likewise (`-2 > 8` is False). The defined `MIN_DURATION_HOURS = 1` constant was never used.
+- **Fix:** Range-check both bounds: `duration_hours < MIN_DURATION_HOURS or duration_hours > MAX_DURATION_HOURS`. This also enforces `end > start`, since any `end <= start` yields duration ≤ 0 < min. Verified: 0h → 400, negative → 400, 1h → 201, 8h → 201, 9h → 400.
