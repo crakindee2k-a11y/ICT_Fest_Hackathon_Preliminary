@@ -24,3 +24,10 @@ request → captured response), not just static reads.
 - **Symptom:** The same refresh token could be replayed indefinitely — first and second `POST /auth/refresh` both returned 200.
 - **Why broken:** `refresh()` issued a new token pair but never recorded the presented refresh token as consumed, so no reuse check ever failed.
 - **Fix:** Reuse the existing `_revoked_tokens` mechanism: added `is_token_revoked(payload)` helper in `auth.py`; in `refresh()`, reject a presented refresh token whose `jti` is already revoked (401) and revoke its `jti` on successful use. Verified: refresh #1 → 200, replay of same token → 401, chained new token also single-use, access token presented to /refresh → 401 (wrong type).
+
+## Bug 4 — Input UTC offset stripped instead of converted  (Medium)
+- **File / line:** `app/timeutils.py:13`
+- **Rule:** #1 — input datetimes carrying a UTC offset are converted to UTC before storage/comparison; naive input treated as UTC.
+- **Symptom:** An offset-bearing input like `2026-08-01T14:00:00+05:00` (= 09:00Z) was stored/returned as `14:00Z` — a 5-hour error corrupting pricing windows, conflict checks, availability and quota.
+- **Why broken:** `dt.replace(tzinfo=None)` discards the offset without shifting the clock, contradicting the function's own docstring. The wall-clock time was kept and just relabelled UTC.
+- **Fix:** `dt.astimezone(timezone.utc).replace(tzinfo=None)` — `astimezone` shifts to the same UTC instant, then tzinfo is dropped for naive-UTC storage (`timezone` was already imported). Verified: `+05:00 14:00 → 09:00Z`, `-03:00 09:00 → 12:00Z`, `Z` and naive inputs unchanged.
