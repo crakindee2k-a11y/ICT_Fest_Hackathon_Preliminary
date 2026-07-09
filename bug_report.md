@@ -167,3 +167,11 @@ request → captured response).
 - **Symptom:** 8 simultaneous cancels of the same booking returned 7 × 200 (want 1) and wrote 7 RefundLog rows (want 1).
 - **Why broken:** The status re-check → refund → commit ran unserialized, and each request's DB session had loaded the `booking` object *before* the check, so it held a stale cached `status="confirmed"`; concurrent cancels all passed the `ALREADY_CANCELLED` guard and each logged a refund.
 - **Fix:** Wrapped the critical section in `_booking_lock` (same lock as create, so create/cancel are mutually serialized) and added `db.refresh(booking)` as the first step inside the lock so the status guard reads the latest committed state. `stats`/`cache`/`notify` remain outside the lock. Verified: 8 concurrent cancels → 1 × 200 / 7 × 409, exactly 1 RefundLog; a subsequent single 72h-notice cancel still returns 100% / 1000 (no regression).
+
+## Bug 21 — GET /bookings/{id} lets a member read another member's booking (IDOR)  (Medium, security)
+
+- **File / line:** `app/routers/bookings.py:170` (`get_booking`).
+- **Rule:** #10 — members may read only their own bookings (another member's id → `404 BOOKING_NOT_FOUND`); admins may read any booking in their org.
+- **Symptom:** A member could `GET /bookings/{id}` for another member's booking in the same org and receive 200 with its full detail (including refund history), instead of 404.
+- **Why broken:** Asymmetry — `cancel_booking` had the owner/admin guard, but `get_booking` was only org-scoped (`Room.org_id == user.org_id`) and never checked booking ownership. The correct-looking cancel path masked the missing guard on the read path.
+- **Fix:** Added the same guard `cancel_booking` uses, right after the not-found check: `if user.role != "admin" and booking.user_id != user.id: raise AppError(404, "BOOKING_NOT_FOUND", ...)`. Verified: non-owner member → 404; owner → 200; admin → 200; cross-org → 404.
