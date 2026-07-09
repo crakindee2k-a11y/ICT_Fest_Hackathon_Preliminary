@@ -119,3 +119,10 @@ request → captured response), not just static reads.
 - **Symptom:** 10 simultaneous booking creates all received the identical code (`CW-001002`).
 - **Why broken:** `next_reference_code` read the counter, slept (`_format_pause`), then wrote back — a non-atomic read-increment-write. Concurrent callers all read the same value before any wrote.
 - **Fix:** Wrapped the read-increment-write in a module-level `threading.Lock` (`_counter_lock`), a leaf lock that nests nothing. Verified: 12 concurrent creates → 12 unique sequential codes (`CW-001000..CW-001011`), zero duplicates.
+
+## Bug 17 — Rate limit bypassed under concurrent create  (Hard)
+- **File / line:** `app/services/ratelimit.py:18`
+- **Rule:** #5 — `POST /bookings` limited to 20 requests per rolling 60s per user (all requests count); excess → 429; holds under concurrent requests.
+- **Symptom:** 30 simultaneous booking creates all returned 201 — zero 429s, rate limit completely bypassed.
+- **Why broken:** `record_and_check` read the user's bucket, trimmed it, slept (`_settle_pause`), then appended and wrote back — a non-atomic read-modify-write. Concurrent callers all read the same small bucket before any wrote, so none observed `len > 20`.
+- **Fix:** Wrapped trim→append→check in a module-level `threading.Lock` (`_buckets_lock`), acquired at the top of the create path before any other lock. The `> _MAX_REQUESTS` threshold (20 allowed, 21st blocked) was already correct. Verified: 30 concurrent creates → exactly 20 × 201 and 10 × 429, no other statuses.
