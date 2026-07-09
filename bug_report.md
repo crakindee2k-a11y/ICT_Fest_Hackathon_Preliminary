@@ -31,3 +31,10 @@ request → captured response), not just static reads.
 - **Symptom:** An offset-bearing input like `2026-08-01T14:00:00+05:00` (= 09:00Z) was stored/returned as `14:00Z` — a 5-hour error corrupting pricing windows, conflict checks, availability and quota.
 - **Why broken:** `dt.replace(tzinfo=None)` discards the offset without shifting the clock, contradicting the function's own docstring. The wall-clock time was kept and just relabelled UTC.
 - **Fix:** `dt.astimezone(timezone.utc).replace(tzinfo=None)` — `astimezone` shifts to the same UTC instant, then tzinfo is dropped for naive-UTC storage (`timezone` was already imported). Verified: `+05:00 14:00 → 09:00Z`, `-03:00 09:00 → 12:00Z`, `Z` and naive inputs unchanged.
+
+## Bug 5 — GET /bookings/{id} overwrites start_time with created_at  (Easy)
+- **File / line:** `app/routers/bookings.py:166`
+- **Rule:** Booking response contract — `start_time` is the booking's start time.
+- **Symptom:** `GET /bookings/{id}` returned `start_time` equal to `created_at` instead of the actual booking start.
+- **Why broken:** After `serialize_booking()` produced the correct payload, a stray line reassigned `response["start_time"] = iso_utc(booking.created_at)`, clobbering the correct value. Only the detail endpoint had this line; create/list use the same serializer correctly.
+- **Fix:** Deleted the overwriting line. Verified: GET returns the real start (`14:00Z`), distinct from `created_at`, with all other fields and the `refunds` array intact.
