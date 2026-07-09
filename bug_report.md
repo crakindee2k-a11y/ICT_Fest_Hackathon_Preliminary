@@ -73,3 +73,10 @@ request → captured response), not just static reads.
 - **Symptom:** 50% of 1001 produced 500 instead of 501. Two independent code paths used two different wrong methods, risking divergence between the stored log and the response.
 - **Why broken:** RefundLog used `int(refund_dollars * 100)` (truncates toward zero, plus float round-trip through dollars); the response used `round(...)` (banker's rounding, half-to-even → 500.5 rounds to 500).
 - **Fix:** Compute once with exact integer half-up in `log_refund`: `amount_cents = (price_cents * percent + 50) // 100`, and have the cancel response read the stored `refund_entry.amount_cents` (single source of truth). Verified: 1001@50% → 501, 1000@50% → 500, @100% → full, @0% → 0, 333@50% → 167; response equals RefundLog in every case.
+
+## Bug 11 — Report and availability caches not fully invalidated on write  (Medium)
+- **File / line:** `app/routers/bookings.py:122` (create) and `:216` (cancel).
+- **Rule:** #12 (usage report reflects current state immediately) and #13 (availability reflects current state immediately).
+- **Symptom:** Two symmetric staleness bugs — after creating a booking the usage report was stale (missing the new booking); after cancelling a booking the room's availability was stale (still showed the cancelled slot as busy).
+- **Why broken:** Invalidation was half-wired. `create_booking` invalidated availability but not the report; `cancel_booking` invalidated the report but not availability. Each write path flushed only one of the two caches.
+- **Fix:** Added the missing mirror call to each path — `cache.invalidate_report(user.org_id)` on create and `cache.invalidate_availability(booking.room_id, booking.start_time.date().isoformat())` on cancel. Verified: report +1 immediately after create, availability → 0 immediately after cancel, report → 0 after cancel.
