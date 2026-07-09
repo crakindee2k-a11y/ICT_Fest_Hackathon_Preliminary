@@ -175,3 +175,11 @@ request → captured response).
 - **Symptom:** A member could `GET /bookings/{id}` for another member's booking in the same org and receive 200 with its full detail (including refund history), instead of 404.
 - **Why broken:** Asymmetry — `cancel_booking` had the owner/admin guard, but `get_booking` was only org-scoped (`Room.org_id == user.org_id`) and never checked booking ownership. The correct-looking cancel path masked the missing guard on the read path.
 - **Fix:** Added the same guard `cancel_booking` uses, right after the not-found check: `if user.role != "admin" and booking.user_id != user.id: raise AppError(404, "BOOKING_NOT_FOUND", ...)`. Verified: non-owner member → 404; owner → 200; admin → 200; cross-org → 404.
+
+## Bug 22 — Usage report stale after a new room is created  (Medium)
+
+- **File / line:** `app/routers/rooms.py:56` (`create_room`).
+- **Rule:** #12 — the usage report lists every room in the caller's org including rooms with zero bookings, and reflects the current state immediately.
+- **Symptom:** After a report was cached, creating a new room did not make it appear in the next report; the new (zero-booking) room stayed absent until an unrelated booking op flushed the org's report cache.
+- **Why broken:** The report cache is keyed `(org_id, from, to)`. Booking create/cancel invalidate it (Bug 11), but `create_room` was a third write path that changes report output (a new room must show up) and never invalidated the cache.
+- **Fix:** Added `cache.invalidate_report(admin.org_id)` after the room is committed. Availability cache is unaffected (a brand-new room has no bookings, so no availability entry can be stale). Verified: report cached as `[room1]`, create room2, next report immediately shows `[room1, room2]` with the zero-booking room present.
