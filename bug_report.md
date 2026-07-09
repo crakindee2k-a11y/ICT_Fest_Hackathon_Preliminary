@@ -101,3 +101,10 @@ request → captured response), not just static reads.
 - **Symptom:** An admin calling `GET /admin/export?include_all=true&room_id=<other-org room>` received the other org's bookings in the CSV.
 - **Why broken:** The `include_all` + `room_id` branch called `fetch_bookings_raw(db, room_id)`, which filters only by `room_id` with no organization scoping. The two other branches used the org-scoped `_fetch_scoped` helper.
 - **Fix:** (1) Root cause — replaced the unscoped call with `_fetch_scoped(db, org_id, None, room_id)` so every export path is org-bound by construction. (2) Rule-9 conformance — added a room-ownership guard in the export router (mirroring `rooms._get_org_room`): a `room_id` not in the caller's org → `404 ROOM_NOT_FOUND`. `fetch_bookings_raw` is now unused but left untouched to keep the diff minimal. Verified: cross-org export (with and without `include_all`) → 404; own-room export → 200 with only own rows; `include_all` without room → only the caller-org's bookings (no cross-org rows).
+
+## Bug 15 — Notification lock-order deadlock  (Hard, liveness)
+- **File / line:** `app/services/notifications.py:31`
+- **Rule:** #16 — no combination of concurrent valid requests may hang the service.
+- **Symptom:** Concurrent booking creates and cancels could permanently hang the service (classic AB-BA deadlock).
+- **Why broken:** `notify_created` acquired `_email_lock` then `_audit_lock`, while `notify_cancelled` acquired them in the opposite order (`_audit_lock` then `_email_lock`). The planted `time.sleep()` in `_send_email`/`_write_audit` widened the window so a create holding email+waiting audit and a cancel holding audit+waiting email would block forever.
+- **Fix:** Canonical lock ordering — `notify_cancelled` now acquires `_email_lock` then `_audit_lock`, matching `notify_created`. Both side effects still run under both locks; only acquisition order changed. Verified against a live uvicorn server: 40 concurrent create+cancel operations (20-thread pool) all returned in ~5s with zero hangs (0 timed-out futures); the pre-fix ordering would deadlock under the same load.
