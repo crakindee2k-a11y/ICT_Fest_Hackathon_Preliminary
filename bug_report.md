@@ -94,3 +94,10 @@ request → captured response), not just static reads.
 - **Symptom:** Re-registering an existing username in the same org returned 201 with the existing user's details instead of a 409 error.
 - **Why broken:** On detecting an existing user the handler returned that user's payload (masking the duplicate) rather than raising. This also side-stepped the model's `UniqueConstraint(org_id, username)`.
 - **Fix:** Raise `AppError(409, "USERNAME_TAKEN", "Username already taken")` when a same-org username exists (before insert, so the response is the clean JSON error, not a 500 from the DB constraint). Verified: dup same org → 409 `{detail, code:USERNAME_TAKEN}`; new org → 201 admin; new user in known org → 201 member; same username in a different org → 201 (multi-tenancy preserved).
+
+## Bug 14 — Export leaks another organization's bookings (IDOR)  (Hard, security)
+- **File / line:** `app/services/export.py:50` (leak) and `app/routers/admin.py:72` (missing 404 guard).
+- **Rule:** #9 — a user may only read data in their own org, on every code path; cross-org resource IDs behave as non-existent → 404.
+- **Symptom:** An admin calling `GET /admin/export?include_all=true&room_id=<other-org room>` received the other org's bookings in the CSV.
+- **Why broken:** The `include_all` + `room_id` branch called `fetch_bookings_raw(db, room_id)`, which filters only by `room_id` with no organization scoping. The two other branches used the org-scoped `_fetch_scoped` helper.
+- **Fix:** (1) Root cause — replaced the unscoped call with `_fetch_scoped(db, org_id, None, room_id)` so every export path is org-bound by construction. (2) Rule-9 conformance — added a room-ownership guard in the export router (mirroring `rooms._get_org_room`): a `room_id` not in the caller's org → `404 ROOM_NOT_FOUND`. `fetch_bookings_raw` is now unused but left untouched to keep the diff minimal. Verified: cross-org export (with and without `include_all`) → 404; own-room export → 200 with only own rows; `include_all` without room → only the caller-org's bookings (no cross-org rows).
