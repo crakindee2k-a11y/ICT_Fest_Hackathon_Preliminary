@@ -87,3 +87,10 @@ request → captured response), not just static reads.
 - **Symptom:** Listing returned newest-first, page 1 skipped the first page of results, and the `limit` query param was ignored (always up to 10 rows).
 - **Why broken:** Three stacked defects in one query — `order_by(start_time.desc(), …)` (wrong direction), `.offset(page * limit)` (page 1 skipped the first `limit` rows; should be `(page-1)*limit`), and `.limit(10)` hardcoded instead of `.limit(limit)`.
 - **Fix:** `order_by(Booking.start_time.asc(), Booking.id.asc())`, `.offset((page - 1) * limit)`, `.limit(limit)`. `page`/`limit` ranges are already validated by FastAPI `Query` bounds. Verified with 5 bookings: page1/2/3 at limit 2 return the correct disjoint windows, no skip/repeat (all 5 ids exactly once), limit honored and echoed, default page1/limit10 returns all ascending.
+
+## Bug 13 — Duplicate username registration returns 201 instead of 409  (Medium)
+- **File / line:** `app/routers/auth.py:37`
+- **Rule:** #15 — a duplicate username within the org → `409 USERNAME_TAKEN`.
+- **Symptom:** Re-registering an existing username in the same org returned 201 with the existing user's details instead of a 409 error.
+- **Why broken:** On detecting an existing user the handler returned that user's payload (masking the duplicate) rather than raising. This also side-stepped the model's `UniqueConstraint(org_id, username)`.
+- **Fix:** Raise `AppError(409, "USERNAME_TAKEN", "Username already taken")` when a same-org username exists (before insert, so the response is the clean JSON error, not a 500 from the DB constraint). Verified: dup same org → 409 `{detail, code:USERNAME_TAKEN}`; new org → 201 admin; new user in known org → 201 member; same username in a different org → 201 (multi-tenancy preserved).
