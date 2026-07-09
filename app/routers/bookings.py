@@ -203,9 +203,8 @@ def cancel_booking(
     else:
         refund_percent = 0
 
-    refund_amount_cents = round(booking.price_cents * (refund_percent / 100.0))
-
-    log_refund(db, booking, refund_percent)
+    refund_entry = log_refund(db, booking, refund_percent)
+    refund_amount_cents = refund_entry.amount_cents
 
     _settlement_pause()
     booking.status = "cancelled"

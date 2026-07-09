@@ -66,3 +66,10 @@ request → captured response), not just static reads.
 - **Symptom:** A cancel with <24h notice refunded 50% (should be 0%); a cancel with exactly 48h notice refunded 50% (should be 100%).
 - **Why broken:** Two defects — (a) the top tier used `int(notice.total_seconds() // 3600) > 48`, which truncates to whole hours and uses strict `>`, so exactly-48h (and e.g. 48h30m) fell through to 50%; (b) the `else` branch (notice <24h) returned `50` instead of `0`.
 - **Fix:** Compare the `timedelta` directly — `notice >= timedelta(hours=48)` → 100, `>= timedelta(hours=24)` → 50, else → 0 (removed the truncating `notice_hours` line). Verified across boundaries: 72h/48h+1m → 100, 48h−1m/36h/24h+1m → 50, 24h−1m/12h → 0.
+
+## Bug 10 — Refund amount rounding wrong and inconsistent  (Medium)
+- **File / line:** `app/services/refunds.py:15` (stored) and `app/routers/bookings.py:208` (response).
+- **Rule:** #6 — refund = percentage of `price_cents` rounded to nearest cent, half-cents rounding UP (50% of 1001 = 501); the response amount must equal the stored RefundLog amount.
+- **Symptom:** 50% of 1001 produced 500 instead of 501. Two independent code paths used two different wrong methods, risking divergence between the stored log and the response.
+- **Why broken:** RefundLog used `int(refund_dollars * 100)` (truncates toward zero, plus float round-trip through dollars); the response used `round(...)` (banker's rounding, half-to-even → 500.5 rounds to 500).
+- **Fix:** Compute once with exact integer half-up in `log_refund`: `amount_cents = (price_cents * percent + 50) // 100`, and have the cancel response read the stored `refund_entry.amount_cents` (single source of truth). Verified: 1001@50% → 501, 1000@50% → 500, @100% → full, @0% → 0, 333@50% → 167; response equals RefundLog in every case.
