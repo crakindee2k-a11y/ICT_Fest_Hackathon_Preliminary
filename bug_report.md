@@ -80,3 +80,10 @@ request → captured response), not just static reads.
 - **Symptom:** Two symmetric staleness bugs — after creating a booking the usage report was stale (missing the new booking); after cancelling a booking the room's availability was stale (still showed the cancelled slot as busy).
 - **Why broken:** Invalidation was half-wired. `create_booking` invalidated availability but not the report; `cancel_booking` invalidated the report but not availability. Each write path flushed only one of the two caches.
 - **Fix:** Added the missing mirror call to each path — `cache.invalidate_report(user.org_id)` on create and `cache.invalidate_availability(booking.room_id, booking.start_time.date().isoformat())` on cancel. Verified: report +1 immediately after create, availability → 0 immediately after cancel, report → 0 after cancel.
+
+## Bug 12 — Pagination: wrong order, offset, and ignored limit  (Hard)
+- **File / line:** `app/routers/bookings.py:137-139`
+- **Rule:** #11 — items sorted ascending `start_time` (ties ascending `id`); page N/limit L returns `[(N−1)·L, N·L)`; sequential pages never skip or repeat; response includes `total`.
+- **Symptom:** Listing returned newest-first, page 1 skipped the first page of results, and the `limit` query param was ignored (always up to 10 rows).
+- **Why broken:** Three stacked defects in one query — `order_by(start_time.desc(), …)` (wrong direction), `.offset(page * limit)` (page 1 skipped the first `limit` rows; should be `(page-1)*limit`), and `.limit(10)` hardcoded instead of `.limit(limit)`.
+- **Fix:** `order_by(Booking.start_time.asc(), Booking.id.asc())`, `.offset((page - 1) * limit)`, `.limit(limit)`. `page`/`limit` ranges are already validated by FastAPI `Query` bounds. Verified with 5 bookings: page1/2/3 at limit 2 return the correct disjoint windows, no skip/repeat (all 5 ids exactly once), limit honored and echoed, default page1/limit10 returns all ascending.
