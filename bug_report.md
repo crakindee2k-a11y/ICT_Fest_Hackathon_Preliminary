@@ -108,3 +108,14 @@ request → captured response), not just static reads.
 - **Symptom:** Concurrent booking creates and cancels could permanently hang the service (classic AB-BA deadlock).
 - **Why broken:** `notify_created` acquired `_email_lock` then `_audit_lock`, while `notify_cancelled` acquired them in the opposite order (`_audit_lock` then `_email_lock`). The planted `time.sleep()` in `_send_email`/`_write_audit` widened the window so a create holding email+waiting audit and a cancel holding audit+waiting email would block forever.
 - **Fix:** Canonical lock ordering — `notify_cancelled` now acquires `_email_lock` then `_audit_lock`, matching `notify_created`. Both side effects still run under both locks; only acquisition order changed. Verified against a live uvicorn server: 40 concurrent create+cancel operations (20-thread pool) all returned in ~5s with zero hangs (0 timed-out futures); the pre-fix ordering would deadlock under the same load.
+
+---
+
+**Concurrency note (Bugs 16-20):** The service is specified as one container on port 8000 (single uvicorn worker); sync endpoints run in Starlette's threadpool over one SQLite file, so these are genuine in-process (thread-level) races. The fixes use `threading.Lock` to serialize the read-modify-write / check-then-act critical sections. Planted `time.sleep()` calls (with misleading comments) widened each race window; they are kept inside the new locks rather than removed, to keep diffs minimal. All lock acquisitions follow a consistent order and leaf locks nest nothing, so no deadlock is introduced. (A multi-process worker deployment would additionally require DB-level guards; that is out of scope for the specified single-container design.)
+
+## Bug 16 — Duplicate reference_code under concurrent create  (Hard)
+- **File / line:** `app/services/reference.py:17`
+- **Rule:** #7 — every booking's `reference_code` is unique, including under concurrent creation.
+- **Symptom:** 10 simultaneous booking creates all received the identical code (`CW-001002`).
+- **Why broken:** `next_reference_code` read the counter, slept (`_format_pause`), then wrote back — a non-atomic read-increment-write. Concurrent callers all read the same value before any wrote.
+- **Fix:** Wrapped the read-increment-write in a module-level `threading.Lock` (`_counter_lock`), a leaf lock that nests nothing. Verified: 12 concurrent creates → 12 unique sequential codes (`CW-001000..CW-001011`), zero duplicates.
