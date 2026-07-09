@@ -59,3 +59,10 @@ request → captured response), not just static reads.
 - **Symptom:** Bookings with a `start_time` up to 5 minutes in the past were accepted (e.g. 100s in the past → 201).
 - **Why broken:** The guard was `start <= now - timedelta(seconds=300)`, rejecting only starts more than 5 minutes old and silently allowing the `(now-300s, now]` window.
 - **Fix:** `start <= now` — rejects any non-future start, including exactly `now`. Verified: 100s-past → 400, 10s-past → 400, valid future → 201. (`timedelta` import retained; still used by the quota window.)
+
+## Bug 9 — Refund percentage tiers wrong  (Medium)
+- **File / line:** `app/routers/bookings.py:200-206`
+- **Rule:** #6 — notice ≥48h → 100%, 24h ≤ notice <48h → 50%, notice <24h → 0%.
+- **Symptom:** A cancel with <24h notice refunded 50% (should be 0%); a cancel with exactly 48h notice refunded 50% (should be 100%).
+- **Why broken:** Two defects — (a) the top tier used `int(notice.total_seconds() // 3600) > 48`, which truncates to whole hours and uses strict `>`, so exactly-48h (and e.g. 48h30m) fell through to 50%; (b) the `else` branch (notice <24h) returned `50` instead of `0`.
+- **Fix:** Compare the `timedelta` directly — `notice >= timedelta(hours=48)` → 100, `>= timedelta(hours=24)` → 50, else → 0 (removed the truncating `notice_hours` line). Verified across boundaries: 72h/48h+1m → 100, 48h−1m/36h/24h+1m → 50, 24h−1m/12h → 0.
