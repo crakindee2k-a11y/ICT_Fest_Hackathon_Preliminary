@@ -151,3 +151,19 @@ request → captured response).
 - **Symptom:** Under concurrent creates/cancels the incremental counters drifted from the true booking-derived totals.
 - **Why broken:** `record_create` and `record_cancel` both read the current `{count, revenue}`, slept (`_aggregate_pause`), then wrote back — non-atomic read-modify-write on shared `_stats`. Concurrent callers lost increments/decrements.
 - **Fix:** One shared module `threading.Lock` (`_stats_lock`) guarding both mutators and the reader (single lock, since all touch `_stats`). Leaf lock, nests nothing. Verified: 15 concurrent creates → stats 15/15000; 5 concurrent cancels → 10/10000, exactly matching the totals derived from the usage report.
+
+## Bug 19 — Double-booking and quota bypass under concurrent create  (Hard)
+
+- **File / line:** `app/routers/bookings.py:106` (create critical section).
+- **Rule:** #3 (no double-booking; holds under concurrent requests) and #4 (max 3 confirmed bookings in the `(now, now+24h]` window; holds under concurrent requests).
+- **Symptom:** 10 simultaneous creates for the same slot all returned 201 (want exactly 1); 8 simultaneous in-window creates all returned 201 (want ≤3).
+- **Why broken:** Classic check-then-act with no serialization — `_has_conflict` and `_check_quota` read the DB, then insert+commit followed. The planted `_pricing_warmup`/`_quota_audit` sleeps widened the gap, so concurrent requests all evaluated the checks against the pre-insert state.
+- **Fix:** Wrapped conflict-check → quota-check → insert → commit in a module-level `threading.Lock` (`_booking_lock`), the outermost lock (the reference-counter leaf lock nests safely inside; stats/cache/notify run after release). Verified: same-slot → 1 × 201 / 9 × 409; in-window quota → 3 × 201 / 5 × 409; 10 legitimate distinct-slot parallel creates → all 201 (no false conflicts).
+
+## Bug 20 — Double-cancel / double-refund under concurrent cancel  (Hard)
+
+- **File / line:** `app/routers/bookings.py:202` (cancel critical section).
+- **Rule:** #6 — a cancelled booking has exactly one RefundLog entry; holds under concurrent cancel requests for the same booking.
+- **Symptom:** 8 simultaneous cancels of the same booking returned 7 × 200 (want 1) and wrote 7 RefundLog rows (want 1).
+- **Why broken:** The status re-check → refund → commit ran unserialized, and each request's DB session had loaded the `booking` object *before* the check, so it held a stale cached `status="confirmed"`; concurrent cancels all passed the `ALREADY_CANCELLED` guard and each logged a refund.
+- **Fix:** Wrapped the critical section in `_booking_lock` (same lock as create, so create/cancel are mutually serialized) and added `db.refresh(booking)` as the first step inside the lock so the status guard reads the latest committed state. `stats`/`cache`/`notify` remain outside the lock. Verified: 8 concurrent cancels → 1 × 200 / 7 × 409, exactly 1 RefundLog; a subsequent single 72h-notice cancel still returns 100% / 1000 (no regression).
